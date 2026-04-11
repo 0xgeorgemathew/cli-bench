@@ -10,7 +10,7 @@
 
 # --- Configuration ---
 # TODO: Replace with your actual GitHub repo URL
-REPO_URL="https://github.com/USER/cli-bench.git"
+REPO_URL="https://github.com/0xgeorgemathew/cli-bench.git"
 REPO_DIR="cli-bench"
 
 # --- Safety flags ---
