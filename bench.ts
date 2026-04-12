@@ -159,11 +159,12 @@ function computeStats(clis: CLI[], results: BenchResult[]): CliStats[] {
 }
 
 function statsToRow(stat: CliStats): string[] {
+	const fmt = (ms: number) => (ms / 1000).toFixed(1)
 	return [
 		stat.name,
-		stat.avgMs.toFixed(0),
-		stat.minMs.toFixed(0),
-		stat.maxMs.toFixed(0),
+		fmt(stat.avgMs),
+		fmt(stat.minMs),
+		fmt(stat.maxMs),
 		String(stat.successes),
 		String(stat.failures),
 	]
@@ -197,7 +198,7 @@ function printSummary(results: BenchResult[]): void {
 	console.log("RESULTS")
 	console.log("=".repeat(70))
 
-	const header = ["CLI", "Avg (ms)", "Min (ms)", "Max (ms)", "OK", "Fail"]
+	const header = ["CLI", "Avg (s)", "Min (s)", "Max (s)", "OK", "Fail"]
 	const stats = computeStats(CLIS, results)
 
 	if (stats.length === 0) {

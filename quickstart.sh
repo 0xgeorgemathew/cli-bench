@@ -142,22 +142,22 @@ fi
 # ============================================================
 header "Step 5/5: Checking target CLI tools"
 
-# These CLIs require separate install and auth — we can only warn
-declare -A CLI_TOOLS=(
-	[claude]="https://docs.anthropic.com/en/docs/claude-code"
-	[kilo]="https://kilo.dev"
-	[opencode]="https://opencode.ai"
-)
-
 ALL_FOUND=true
-for cli in claude kilo opencode; do
-	if command -v "$cli" &>/dev/null; then
-		ok "$cli is installed"
+
+check_cli() {
+	local name="$1"
+	local url="$2"
+	if command -v "$name" &>/dev/null; then
+		ok "$name is installed"
 	else
-		warn "$cli is not found — install it: ${CLI_TOOLS[$cli]}"
+		warn "$name is not found — install it: $url"
 		ALL_FOUND=false
 	fi
-done
+}
+
+check_cli "claude" "https://docs.anthropic.com/en/docs/claude-code"
+check_cli "kilo"   "https://kilo.dev"
+check_cli "opencode" "https://opencode.ai"
 
 # ============================================================
 #  Done
@@ -169,8 +169,8 @@ printf "${BOLD}${GREEN}  ╚═════════════════�
 printf "\n"
 
 if $ALL_FOUND; then
-	info "All CLI tools are installed. Run the benchmark:"
-	printf "\n    ${BOLD}cd %s && bun bench.ts${RESET}\n\n" "$REPO_DIR"
+	info "All CLI tools found. Running benchmark...\n"
+	bun bench.ts
 else
 	info "Install the missing CLI tools above, then run:"
 	printf "\n    ${BOLD}cd %s && bun bench.ts${RESET}\n\n" "$REPO_DIR"
