@@ -1,32 +1,23 @@
+import type { CLI, BenchResult, CliStats, NetworkInfo, Phase, RunResult } from "./types"
+import { generateHtmlReport } from "./report"
+
 const QUESTION_COUNT = 9
+const CONSISTENCY_COUNT = 3
 const TIMEOUT_MS = 120_000
 const COUNTDOWN_SECONDS = 10
 const REPORT_PATH = "bench-report.html"
-
-type NetworkInfo = {
-	ip: string,
-	city: string,
-	region: string,
-	country: string,
-	org: string,
-	timezone: string,
-}
-
-type CLI = {
-	name: string,
-	cmd: string,
-	args: (prompt: string) => string[],
-}
 
 const CLIS: CLI[] = [
 	{
 		name: "Claude",
 		cmd: "claude",
+		model: "claude-sonnet-4-20250514",
 		args: (prompt) => ["-p", prompt, "--output-format", "text"],
 	},
 	{
 		name: "Kilo",
 		cmd: "kilo",
+		model: "glm-5.1",
 		args: (prompt) => [
 			"run",
 			"-m",
@@ -38,6 +29,7 @@ const CLIS: CLI[] = [
 	{
 		name: "OpenCode",
 		cmd: "opencode",
+		model: "default",
 		args: (prompt) => ["run", prompt],
 	},
 ]
@@ -126,13 +118,6 @@ async function countdown(seconds: number): Promise<void> {
 	console.log("\rStarting now!      \n")
 }
 
-type RunResult = {
-	success: boolean,
-	timeMs: number,
-	error?: string,
-	output?: string,
-}
-
 async function runOnce(cli: CLI, prompt: string): Promise<RunResult> {
 	const start = performance.now()
 	try {
@@ -168,21 +153,6 @@ async function runOnce(cli: CLI, prompt: string): Promise<RunResult> {
 			error: err instanceof Error ? err.message : String(err),
 		}
 	}
-}
-
-type BenchResult = {
-	cli: CLI,
-	prompt: string,
-	run: RunResult,
-}
-
-type CliStats = {
-	name: string,
-	avgMs: number,
-	minMs: number,
-	maxMs: number,
-	successes: number,
-	failures: number,
 }
 
 function computeStats(clis: CLI[], results: BenchResult[]): CliStats[] {
@@ -238,9 +208,9 @@ function printComparison(stats: CliStats[]): void {
 	}
 }
 
-function printSummary(results: BenchResult[], clis: CLI[]): void {
+function printSummary(results: BenchResult[], clis: CLI[], label: string): void {
 	console.log("\n" + "=".repeat(70))
-	console.log("RESULTS")
+	console.log(`${label.toUpperCase()} RESULTS`)
 	console.log("=".repeat(70))
 
 	const header = ["CLI", "Avg (s)", "Min (s)", "Max (s)", "OK", "Fail"]
@@ -265,338 +235,54 @@ function printQuestionPlan(questions: string[], clis: CLI[], questionsPerCli: nu
 	})
 }
 
-async function runBreadthPhase(questions: string[], clis: CLI[], questionsPerCli: number): Promise<BenchResult[]> {
+async function runPhase(
+	questions: string[],
+	clis: CLI[],
+	phase: Phase,
+	layout: "split" | "shared",
+): Promise<BenchResult[]> {
 	const results: BenchResult[] = []
+	const questionsPerCli = layout === "split"
+		? Math.floor(questions.length / clis.length)
+		: questions.length
 
-	for (let ci = 0; ci < clis.length; ci++) {
-		const cli = clis[ci]
-		const offset = ci * questionsPerCli
-		console.log(`--- ${cli.name} ---`)
+	console.log(`--- ${phase} phase ---`)
 
-		for (let qi = 0; qi < questionsPerCli; qi++) {
-			const question = questions[offset + qi]
-			process.stdout.write(`  Q${offset + qi + 1} ${cli.name}...`)
-			const run = await runOnce(cli, question)
-			const status = run.success ? "OK" : "FAIL"
-			console.log(` ${status} (${run.timeMs.toFixed(0)}ms)`)
-			if (!run.success && run.error) {
-				console.log(`    Error: ${run.error}`)
+	if (layout === "split") {
+		for (let ci = 0; ci < clis.length; ci++) {
+			const cli = clis[ci]
+			const offset = ci * questionsPerCli
+			console.log(`  ${cli.name}`)
+			for (let qi = 0; qi < questionsPerCli; qi++) {
+				const question = questions[offset + qi]
+				process.stdout.write(`    Q${offset + qi + 1}...`)
+				const run = await runOnce(cli, question)
+				const status = run.success ? "OK" : "FAIL"
+				console.log(` ${status} (${run.timeMs.toFixed(0)}ms)`)
+				if (!run.success && run.error) {
+					console.log(`      Error: ${run.error}`)
+				}
+				results.push({ cli, prompt: question, run, phase })
 			}
-			results.push({ cli, prompt: question, run })
 		}
-		console.log()
+	} else {
+		for (let qi = 0; qi < questions.length; qi++) {
+			const question = questions[qi]
+			console.log(`  Q${qi + 1}: ${question.length > 50 ? question.slice(0, 47) + "..." : question}`)
+			for (const cli of clis) {
+				process.stdout.write(`    ${cli.name}...`)
+				const run = await runOnce(cli, question)
+				const status = run.success ? "OK" : "FAIL"
+				console.log(` ${status} (${run.timeMs.toFixed(0)}ms)`)
+				if (!run.success && run.error) {
+					console.log(`      Error: ${run.error}`)
+				}
+				results.push({ cli, prompt: question, run, phase })
+			}
+		}
 	}
 
 	return results
-}
-
-function generateHtmlReport(
-	results: BenchResult[],
-	clis: CLI[],
-	stats: CliStats[],
-	netInfo: NetworkInfo,
-): string {
-	const timestamp = new Date().toLocaleString()
-	const labels = stats.map((s) => s.name)
-	const avgData = stats.map((s) => +(s.avgMs / 1000).toFixed(2))
-	const minData = stats.map((s) => +(s.minMs / 1000).toFixed(2))
-	const maxData = stats.map((s) => +(s.maxMs / 1000).toFixed(2))
-	const successData = stats.map((s) => s.successes)
-	const failData = stats.map((s) => s.failures)
-
-	const perQuestionLabels = results.map((r) => {
-		const q = r.prompt.length > 40 ? r.prompt.slice(0, 37) + "..." : r.prompt
-		return `${r.cli.name}: ${q}`
-	})
-	const perQuestionData = results.map((r) => +(r.run.timeMs / 1000).toFixed(2))
-	const perQuestionColors = results.map((r) => {
-		if (r.cli.name === "Claude") return "rgba(204,120,50,0.7)"
-		if (r.cli.name === "Kilo") return "rgba(59,130,246,0.7)"
-		return "rgba(139,92,246,0.7)"
-	})
-
-	const sorted = [...stats].sort((a, b) => a.avgMs - b.avgMs)
-	const fastest = sorted[0]
-	const ratio = sorted.length >= 2 && fastest.avgMs > 0
-		? (sorted[sorted.length - 1].avgMs / fastest.avgMs).toFixed(2)
-		: "1.00"
-
-	const barColors = [
-		"rgba(204,120,50,0.8)",
-		"rgba(59,130,246,0.8)",
-		"rgba(139,92,246,0.8)",
-		"rgba(16,185,129,0.8)",
-		"rgba(239,68,68,0.8)",
-	]
-
-	const resultsRows = results.map((r) => {
-		const statusClass = r.run.success ? "ok" : "fail"
-		const statusText = r.run.success ? "OK" : "FAIL"
-		const q = r.prompt.length > 60 ? r.prompt.slice(0, 57) + "..." : r.prompt
-		return `<tr>
-			<td>${r.cli.name}</td>
-			<td title="${r.prompt}">${q}</td>
-			<td class="${statusClass}">${statusText}</td>
-			<td>${(r.run.timeMs / 1000).toFixed(2)}s</td>
-		</tr>`
-	}).join("\n")
-
-	return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CLI Benchmark Results</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-<style>
-	* { margin: 0; padding: 0; box-sizing: border-box; }
-	body {
-		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-		background: #0f172a;
-		color: #e2e8f0;
-		padding: 2rem;
-		line-height: 1.6;
-	}
-	.container { max-width: 1200px; margin: 0 auto; }
-	h1 {
-		font-size: 2rem;
-		background: linear-gradient(135deg, #f59e0b, #3b82f6);
-		-webkit-background-clip: text;
-		-webkit-text-fill-color: transparent;
-		margin-bottom: 0.25rem;
-	}
-	.meta {
-		color: #94a3b8;
-		font-size: 0.85rem;
-		margin-bottom: 2rem;
-		display: flex;
-		gap: 2rem;
-		flex-wrap: wrap;
-	}
-	.meta span { display: flex; align-items: center; gap: 0.3rem; }
-	.net-info {
-		background: #1e293b;
-		border: 1px solid #334155;
-		border-radius: 12px;
-		padding: 1.25rem 1.5rem;
-		margin-bottom: 2rem;
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-		gap: 0.75rem;
-	}
-	.net-info .label { color: #64748b; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
-	.net-info .value { color: #f1f5f9; font-size: 0.95rem; font-weight: 500; }
-	.highlight {
-		background: linear-gradient(135deg, #1e293b, #1e293b);
-		border: 1px solid #334155;
-		border-radius: 12px;
-		padding: 1.5rem;
-		margin-bottom: 2rem;
-		text-align: center;
-	}
-	.highlight .winner {
-		font-size: 1.5rem;
-		font-weight: 700;
-		color: #10b981;
-	}
-	.highlight .detail { color: #94a3b8; margin-top: 0.25rem; }
-	.charts {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
-		gap: 1.5rem;
-		margin-bottom: 2rem;
-	}
-	.chart-card {
-		background: #1e293b;
-		border: 1px solid #334155;
-		border-radius: 12px;
-		padding: 1.5rem;
-	}
-	.chart-card h3 {
-		color: #cbd5e1;
-		font-size: 0.9rem;
-		margin-bottom: 1rem;
-	}
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		background: #1e293b;
-		border-radius: 12px;
-		overflow: hidden;
-		border: 1px solid #334155;
-	}
-	th {
-		background: #334155;
-		color: #94a3b8;
-		font-size: 0.75rem;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		padding: 0.75rem 1rem;
-		text-align: left;
-	}
-	td {
-		padding: 0.65rem 1rem;
-		border-top: 1px solid #1e293b;
-		font-size: 0.9rem;
-	}
-	tr:hover td { background: #263148; }
-	.ok { color: #10b981; font-weight: 600; }
-	.fail { color: #ef4444; font-weight: 600; }
-	.section-title {
-		font-size: 1.1rem;
-		color: #cbd5e1;
-		margin-bottom: 1rem;
-		font-weight: 600;
-	}
-	@media (max-width: 600px) {
-		.charts { grid-template-columns: 1fr; }
-	}
-</style>
-</head>
-<body>
-<div class="container">
-	<h1>CLI Benchmark Report</h1>
-	<div class="meta">
-		<span>&#x1F4C5; ${timestamp}</span>
-		<span>&#x1F310; ${netInfo.ip}</span>
-		<span>&#x1F3E2; ${netInfo.org}</span>
-		<span>&#x1F30D; ${[netInfo.city, netInfo.region, netInfo.country].filter(Boolean).join(", ")}</span>
-	</div>
-
-	<div class="net-info">
-		<div><div class="label">IP Address</div><div class="value">${netInfo.ip}</div></div>
-		<div><div class="label">Organization</div><div class="value">${netInfo.org || "N/A"}</div></div>
-		<div><div class="label">Location</div><div class="value">${[netInfo.city, netInfo.region, netInfo.country].filter(Boolean).join(", ") || "N/A"}</div></div>
-		<div><div class="label">Timezone</div><div class="value">${netInfo.timezone || "N/A"}</div></div>
-	</div>
-
-	${fastest ? `<div class="highlight">
-		<div class="winner">&#x1F3C6; ${fastest.name} wins!</div>
-		<div class="detail">${ratio}x faster than ${sorted[sorted.length - 1].name} &mdash; avg ${(fastest.avgMs / 1000).toFixed(2)}s</div>
-	</div>` : ""}
-
-	<div class="charts">
-		<div class="chart-card">
-			<h3>Average Response Time (seconds)</h3>
-			<canvas id="avgChart"></canvas>
-		</div>
-		<div class="chart-card">
-			<h3>Min / Avg / Max Breakdown</h3>
-			<canvas id="rangeChart"></canvas>
-		</div>
-		<div class="chart-card">
-			<h3>Success vs Failure</h3>
-			<canvas id="successChart"></canvas>
-		</div>
-		<div class="chart-card">
-			<h3>Per-Question Response Time</h3>
-			<canvas id="perQChart"></canvas>
-		</div>
-	</div>
-
-	<h2 class="section-title">Detailed Results</h2>
-	<table>
-		<thead>
-			<tr><th>CLI</th><th>Question</th><th>Status</th><th>Time</th></tr>
-		</thead>
-		<tbody>
-			${resultsRows}
-		</tbody>
-	</table>
-</div>
-<script>
-const barColors = ${JSON.stringify(barColors)};
-const borderColors = barColors.map(c => c.replace("0.8", "1"));
-
-new Chart(document.getElementById("avgChart"), {
-	type: "bar",
-	data: {
-		labels: ${JSON.stringify(labels)},
-		datasets: [{
-			label: "Avg (s)",
-			data: ${JSON.stringify(avgData)},
-			backgroundColor: barColors.slice(0, ${labels.length}),
-			borderColor: borderColors.slice(0, ${labels.length}),
-			borderWidth: 1,
-			borderRadius: 6,
-		}],
-	},
-	options: {
-		responsive: true,
-		plugins: { legend: { display: false } },
-		scales: {
-			y: { beginAtZero: true, ticks: { color: "#94a3b8" }, grid: { color: "#334155" } },
-			x: { ticks: { color: "#e2e8f0" }, grid: { display: false } },
-		},
-	},
-});
-
-new Chart(document.getElementById("rangeChart"), {
-	type: "bar",
-	data: {
-		labels: ${JSON.stringify(labels)},
-		datasets: [
-			{ label: "Min (s)", data: ${JSON.stringify(minData)}, backgroundColor: "rgba(16,185,129,0.7)", borderRadius: 4 },
-			{ label: "Avg (s)", data: ${JSON.stringify(avgData)}, backgroundColor: "rgba(59,130,246,0.7)", borderRadius: 4 },
-			{ label: "Max (s)", data: ${JSON.stringify(maxData)}, backgroundColor: "rgba(239,68,68,0.7)", borderRadius: 4 },
-		],
-	},
-	options: {
-		responsive: true,
-		plugins: { legend: { labels: { color: "#e2e8f0" } } },
-		scales: {
-			y: { beginAtZero: true, ticks: { color: "#94a3b8" }, grid: { color: "#334155" } },
-			x: { ticks: { color: "#e2e8f0" }, grid: { display: false } },
-		},
-	},
-});
-
-new Chart(document.getElementById("successChart"), {
-	type: "bar",
-	data: {
-		labels: ${JSON.stringify(labels)},
-		datasets: [
-			{ label: "Successes", data: ${JSON.stringify(successData)}, backgroundColor: "rgba(16,185,129,0.7)", borderRadius: 4 },
-			{ label: "Failures", data: ${JSON.stringify(failData)}, backgroundColor: "rgba(239,68,68,0.7)", borderRadius: 4 },
-		],
-	},
-	options: {
-		responsive: true,
-		plugins: { legend: { labels: { color: "#e2e8f0" } } },
-		scales: {
-			y: { beginAtZero: true, ticks: { color: "#94a3b8", stepSize: 1 }, grid: { color: "#334155" } },
-			x: { ticks: { color: "#e2e8f0" }, grid: { display: false } },
-		},
-	},
-});
-
-new Chart(document.getElementById("perQChart"), {
-	type: "bar",
-	data: {
-		labels: ${JSON.stringify(perQuestionLabels)},
-		datasets: [{
-			label: "Time (s)",
-			data: ${JSON.stringify(perQuestionData)},
-			backgroundColor: ${JSON.stringify(perQuestionColors)},
-			borderRadius: 4,
-		}],
-	},
-	options: {
-		indexAxis: "y",
-		responsive: true,
-		plugins: { legend: { display: false } },
-		scales: {
-			x: { beginAtZero: true, ticks: { color: "#94a3b8" }, grid: { color: "#334155" } },
-			y: {
-				ticks: { color: "#e2e8f0", font: { size: 10 } },
-				grid: { display: false },
-			},
-		},
-	},
-});
-</script>
-</body>
-</html>`
 }
 
 async function main(): Promise<void> {
@@ -618,9 +304,17 @@ async function main(): Promise<void> {
 		)
 	}
 
-	console.log(`\nGenerating questions with Claude...`)
-	const questions = await generateQuestions(QUESTION_COUNT)
-	printQuestionPlan(questions, available, questionsPerCli)
+	console.log(`\nGenerating ${QUESTION_COUNT} breadth + ${CONSISTENCY_COUNT} consistency questions with Claude...`)
+	const [breadthQuestions, consistencyQuestions] = await Promise.all([
+		generateQuestions(QUESTION_COUNT),
+		generateQuestions(CONSISTENCY_COUNT),
+	])
+
+	printQuestionPlan(breadthQuestions, available, questionsPerCli)
+	console.log(`\nConsistency questions (same for all CLIs):`)
+	consistencyQuestions.forEach((q, i) => {
+		console.log(`  C${i + 1}. ${q}`)
+	})
 
 	await countdown(COUNTDOWN_SECONDS)
 
@@ -628,11 +322,16 @@ async function main(): Promise<void> {
 	const netInfo = await fetchNetworkInfo()
 	console.log(`  IP: ${netInfo.ip} | Org: ${netInfo.org} | ${netInfo.city}, ${netInfo.region}, ${netInfo.country}`)
 
-	const results = await runBreadthPhase(questions, available, questionsPerCli)
-	printSummary(results, available)
+	console.log("\n=== BREADTH PHASE ===")
+	const breadthResults = await runPhase(breadthQuestions, available, "breadth", "split")
+	printSummary(breadthResults, available, "breadth")
 
-	const allStats = computeStats(available, results)
-	const html = generateHtmlReport(results, available, allStats, netInfo)
+	console.log("=== CONSISTENCY PHASE ===")
+	const consistencyResults = await runPhase(consistencyQuestions, available, "consistency", "shared")
+	printSummary(consistencyResults, available, "consistency")
+
+	const allResults = [...breadthResults, ...consistencyResults]
+	const html = generateHtmlReport(allResults, available, netInfo)
 	const reportPath = `${import.meta.dir}/${REPORT_PATH}`
 	await Bun.write(reportPath, html)
 	console.log(`\nReport saved to ${reportPath}`)
